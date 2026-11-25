@@ -1,9 +1,11 @@
 import { Alert, Box, CircularProgress, Collapse, FormControl, FormControlLabel, FormLabel, InputBase, InputLabel, Link, MenuItem, Paper, Radio, RadioGroup, Select, Skeleton, Stack, styled, Typography } from '@mui/material';
 import { QueryClient, useQueries } from '@tanstack/react-query';
-import  { useEffect, useMemo, useState } from 'react'
+import  { useMemo, useState } from 'react'
 import { LayersControl, TileLayer, MapContainer, Marker, Tooltip, Popup } from 'react-leaflet';
-import { formatString } from './land-data';
+import { formatString } from './utils';
 import { ArrowLeft, ArrowRight, ExpandMore } from '@mui/icons-material';
+import { getColorRanges, getMemoIcon, returnMarkerColor } from './utils';
+import LegendItem from './legend-item';
 const BACKEND_URL = "https://api.kijanispace.eu/v1"
 export interface Location {
     latitude: number;
@@ -44,12 +46,11 @@ async function getBaseQuery<T>(url: string): Promise<T> {
     }
     return response.json();
 }
-export const getRequestPath = (url?:string) => {
+const getRequestPath = (url?:string) => {
     if (!url) {
         return ""
     }
-    const apiKey = import.meta.env.VITE_API_KEY;
-    return url+`&api_key=${apiKey}`
+    return url+`&api_key=sk_QGEuNlhUs24b2r5s59JIPCRGaE5Ic2JpDiqRTrfBlz8`
 }
 export default function WaterData({setShownData,shownData}:{shownData:string,setShownData:(d:"land"| "water")=>void,}) {
     const queries = useQueries({
@@ -61,7 +62,7 @@ export default function WaterData({setShownData,shownData}:{shownData:string,set
                     );
                     return {
                         ...res,
-                    requestUrl: `${BACKEND_URL}/v1/agro_climate/water?lat=${coord.lat}&lon=${coord.lng}`,
+                    requestUrl: `${BACKEND_URL}/agro_climate/water?lat=${coord.lat}&lon=${coord.lng}`,
                     };
                 },
                 staleTime: 1000 * 60 * 5,
@@ -81,17 +82,38 @@ export default function WaterData({setShownData,shownData}:{shownData:string,set
     return items
     },[staticData])
 
-    useEffect(() => {
-    if(!menuItemValue && menuItems.length>0 ) {
-        setMenuItemValue(menuItems[0].key);
-    }
-    }, [menuItems.length]);
+    // Default to the first available variable once loaded
+    const activeMenuItem = menuItemValue || menuItems[0]?.key || "";
+        
         
     const isAllFetched = queries.every(qr=>qr.isFetched)
     const isOneFinished = results[0]
     const [showNav,setShowNav] = useState(true)
     const [mapType,setMapType] = useState<'OpenStreetMap' | 'Satellite'>('Satellite')
 
+    const aggregatedData = useMemo(() => {
+        if (!results.length) return null;
+
+        const acc: Record<string, { min: number; max: number }> = {};
+
+        for (const rd of results) {
+            for (const [key, value] of Object.entries(rd.static_data)) {
+                if (typeof value !== "number") continue;
+
+                if (!acc[key]) {
+                    acc[key] = { min: value, max: value };
+                } else {
+                    acc[key].min = Math.min(acc[key].min, value);
+                    acc[key].max = Math.max(acc[key].max, value);
+                }
+            }
+        }
+        return acc;
+    }, [results]);
+    const legendRanges = useMemo(() => {
+        if (!aggregatedData || !activeMenuItem || !aggregatedData[activeMenuItem]) return null;
+        return getColorRanges(aggregatedData[activeMenuItem]);
+    }, [aggregatedData, activeMenuItem]);
     return (
         <Box component={"main"} sx={{height:'100%', flex:1,flexGrow:1, position:'relative',width:'100%'}}>
             <Box sx={{height:'100%',bgcolor:'red',flex:1, position:'relative'}}>
@@ -112,13 +134,23 @@ export default function WaterData({setShownData,shownData}:{shownData:string,set
                         </LayersControl.BaseLayer>
                     </LayersControl>
                     {
-                            isOneFinished ? results.map((res)=> (res && res.static_data[menuItemValue])?(
+                            isOneFinished ? results.map((res)=> (res && res.static_data[activeMenuItem])?(
                                 <Marker 
-                                    title={(res.static_data[menuItemValue]??0).toString()}
-                                    
+                                    title={(res.static_data[activeMenuItem]??0).toString()}
+                                    icon={
+                                        res.static_data?
+                                            getMemoIcon(
+                                                returnMarkerColor({
+                                                    value: res.static_data[activeMenuItem]??0,
+                                                    min: (aggregatedData && aggregatedData?.[activeMenuItem])? aggregatedData?.[activeMenuItem].min:0,
+                                                    max: (aggregatedData && aggregatedData?.[activeMenuItem])? aggregatedData?.[activeMenuItem].max:0,
+                                                })
+                                            )
+                                            :getMemoIcon('')
+                                    }
                                     position={[res.location.latitude ,res.location.longitude]}
                                 >
-                                    <Tooltip>{(res.static_data[menuItemValue]??0).toString()}</Tooltip>
+                                    <Tooltip>{(res.static_data[activeMenuItem]??0).toString()}</Tooltip>
                                     {
                                         res ?(
                                             <Box sx={{zIndex:1000}} >
@@ -134,7 +166,7 @@ export default function WaterData({setShownData,shownData}:{shownData:string,set
                                                     <Stack spacing={1.5}>
                                                         
                                                         <Typography variant="h6" sx={{fontWeight:600}}>
-                                                            {menuItems.find(i=>i.key===menuItemValue)?.value??''}
+                                                            {menuItems.find(i=>i.key===activeMenuItem)?.value??''}
                                                         </Typography>
 
                                                         <Box>
@@ -142,7 +174,7 @@ export default function WaterData({setShownData,shownData}:{shownData:string,set
                                                             Value
                                                         </Typography>
                                                         <Typography variant="body1" sx={{fontWeight:500}}>
-                                                            {res.static_data[menuItemValue]}
+                                                            {res.static_data[activeMenuItem]}
                                                         </Typography>
                                                         </Box>
 
@@ -187,6 +219,11 @@ export default function WaterData({setShownData,shownData}:{shownData:string,set
                         }
                 </MapContainer>
             </Box>
+            <LegendItem
+                isLoading={(!isAllFetched) || isOneFinished === undefined } 
+                legendRanges={legendRanges}
+                menuItemValue={activeMenuItem}
+            />
             {
                 showNav?(
                     <Box sx={{position:'absolute',display:'flex', width:{lg:'30%',sm:'75%',xs:'75%',md:'50%'},zIndex:99,m:0,top:10,left:50}}>
@@ -208,8 +245,8 @@ export default function WaterData({setShownData,shownData}:{shownData:string,set
                                     </Box>
                                 ):(
                                     <>
+                                        <InputLabel sx={{fontSize:'15px',}} color='info'>Agroclimatic Data</InputLabel>
                                         <FormControl fullWidth sx={{ my:1,border: '1px solid #ced4da', minWidth: 120 ,borderRadius:2}} size="small">
-                                            <InputLabel sx={{fontSize:'15px',}} color='info'>Agroclimatic Data</InputLabel>
                                             <Select 
                                                 IconComponent={()=><ExpandMore/>}
                                                 input={<BootstrapInput />} 
@@ -467,7 +504,7 @@ const COORDINATE_POINTS = [
 function trimWithEllipsis( input?: string, maxLength: number = 40): string {
     if (!input) return "";
 
-    let text = String(input).trim();
+    const text = String(input).trim();
 
     if (!Number.isFinite(maxLength) || maxLength <= 0) {
         return "";

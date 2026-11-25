@@ -1,54 +1,13 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { MapContainer, Marker,Popup, TileLayer, Tooltip,LayersControl, } from 'react-leaflet'
 import { ArrowLeft, ArrowRight,  ExpandMore } from '@mui/icons-material';
 import { Alert, Box, CircularProgress, Radio, Collapse, FormControl, FormControlLabel, FormLabel, InputBase, InputLabel, MenuItem, RadioGroup, Select, Skeleton, styled, Typography } from '@mui/material'
 import { useQueries } from '@tanstack/react-query';
 import SimpleAreaChart from './graph';
+import { getColorRanges, getMemoIcon, returnMarkerColor, formatString, getCurrentHourString, type AgroClimateData } from './utils';
+import LegendItem from './legend-item';
 
-interface CurrentHourValuesValue{
-    value: number;
-    min: number;
-    max: number;
-} 
-interface AgroClimateData {
-    location: Location;
-    requestUrl: string
-    forecast_info: ForecastInfo;
-    static_data: StaticData;
-    units: Units;
-    currentHourValues: Record<string, CurrentHourValuesValue> | null;
-    forecast_data: WeatherData;
-    source: string;
-}
-interface Location {
-    latitude: number;
-    longitude: number;
-    elevation: number;
-    timezone: string;
-}
-interface ForecastInfo {
-    forecast_days: number;
-    history_days: number;
-    model_run: string;
-    last_updated: Date;
-}
 
-interface StaticData {
-    dataset: Dataset;
-}
-interface Dataset {
-  landuse: string;
-  water_body_percentage: number;
-}
-interface Units {
-    time: Date;
-    [key: string]: string | Date
-    
-}
-interface WeatherData {
-    time: Date[];
-    [key: string]: number[] | string[] | Date[]
-}
 const BACKEND_URL = "https://api.kijanispace.eu/v1"
 async function getBaseQuery<T>(url: string): Promise<T> {
     // const BACKEND_URL = import.meta.env.VITE_API_BASE_URL + "/v1";
@@ -63,22 +22,6 @@ async function getBaseQuery<T>(url: string): Promise<T> {
         throw new Error(`HTTP Error: ${response.status}`);
     }
     return response.json();
-}
-export function getCurrentHourString() {
-  const now = new Date();
-
-  const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, '0');
-  const day = String(now.getDate()).padStart(2, '0');
-  const hour = String(now.getHours()).padStart(2, '0');
-
-  return `${year}-${month}-${day} ${hour}:00`;
-}
-
-export function formatString(input: string): string {
-    if (!input) return "";
-    const withSpaces = input.replace(/_/g, " ");
-    return withSpaces[0].toUpperCase() + withSpaces.slice(1);
 }
 export default function LandData({setShownData,shownData}:{shownData:string,setShownData:(d:"land"| "water")=>void,}) {
     const currentHour = useMemo(() => getCurrentHourString(), []);
@@ -126,13 +69,49 @@ export default function LandData({setShownData,shownData}:{shownData:string,setS
             .filter(k => k !== "time")
             .map(k => ({ key: k, value: formatString(k) }));
     }, [forecastData]);
-    useEffect(() => {
-        if (!menuItemValue && menuItems.length>0) {
-            setMenuItemValue(menuItems[0].key);
-        }
-    }, [menuItems.length]);
+    // Default to the first available variable once loaded
+    const activeMenuItem = menuItemValue || menuItems[0]?.key || "";
     const [mapType,setMapType] = useState<'OpenStreetMap' | 'Satellite'>('Satellite')
     const [showNav,setShowNav] = useState(true)
+    const validResultsData = useMemo(() => {
+        return results
+            .map(r => r.data)
+            .filter((d): d is NonNullable<typeof d> => !!d);
+    }, [results]); // Only re-run when results change
+
+    const aggregatedData = useMemo(() => {
+
+        if (!validResultsData.length) return null;
+        
+        const acc: Record<string, { min: number; max: number }> = {};
+
+        for (const rd of validResultsData) {
+            if (!rd) continue;
+
+            const timeIndex = rd.forecast_data.time.indexOf(currentHour as unknown as Date);
+            if (timeIndex === -1) continue;
+
+            for (const [key, values] of Object.entries(rd.forecast_data)) {
+                if (key === "time") continue;
+
+                const val = (values as number[])[timeIndex];
+                if (val == null) continue;
+
+                if (!acc[key]) {
+                    acc[key] = { min: val, max: val };
+                } else {
+                    acc[key].min = Math.min(acc[key].min, val);
+                    acc[key].max = Math.max(acc[key].max, val);
+                }
+            }
+        }
+
+        return acc;
+    }, [validResultsData, currentHour]);
+    const legendRanges = useMemo(() => {
+        if (!aggregatedData || !activeMenuItem || !aggregatedData[activeMenuItem]) return null;
+        return getColorRanges(aggregatedData[activeMenuItem]);
+    }, [aggregatedData, activeMenuItem]);
     return (
         <Box component={"main"} sx={{height:'100%', flex:1,flexGrow:1, position:'relative',width:'100%'}}>
             <Box sx={{height:'100%',bgcolor:'red',flex:1, position:'relative'}}>
@@ -153,15 +132,26 @@ export default function LandData({setShownData,shownData}:{shownData:string,setS
                         </LayersControl.BaseLayer>
                     </LayersControl>
                     {
-                        isOneFinished ? results.map((res,i)=> (res && res.data && res.data.currentHourValues && res.data.currentHourValues[menuItemValue]?.value && res.data.units[menuItemValue])?(
+                        isOneFinished ? results.map((res,i)=> (res && res.data && res.data.currentHourValues && res.data.currentHourValues[activeMenuItem]?.value && res.data.units[activeMenuItem])?(
                             <Marker 
                                 key={i.toString()}
+                                icon={
+                                    res.data.currentHourValues
+                                        ? getMemoIcon(
+                                            returnMarkerColor({
+                                                value: res.data.currentHourValues[activeMenuItem]?.value ?? 0,
+                                                min: aggregatedData?.[activeMenuItem]?.min ?? 0,
+                                                max: aggregatedData?.[activeMenuItem]?.max ?? 0
+                                            })
+                                        )
+                                        : getMemoIcon('')
+                                }
                                 position={[res.data.location.latitude,res.data.location.longitude]}
                             >
                                 {
-                                    (res && res.data && res.data.currentHourValues && res.data.currentHourValues[menuItemValue]?.value && res.data.units[menuItemValue]) ?(
+                                    (res && res.data && res.data.currentHourValues && res.data.currentHourValues[activeMenuItem]?.value && res.data.units[activeMenuItem]) ?(
                                         <Box sx={{zIndex:1000}} >
-                                            <Tooltip>{((res && res.data && res.data.currentHourValues && res.data.currentHourValues[menuItemValue])?`${res.data.currentHourValues[menuItemValue].value} ${res.data.units[menuItemValue]} `:"").toString()}</Tooltip>
+                                            <Tooltip>{((res && res.data && res.data.currentHourValues && res.data.currentHourValues[activeMenuItem])?`${res.data.currentHourValues[activeMenuItem].value} ${res.data.units[activeMenuItem]} `:"").toString()}</Tooltip>
                                             <Popup
                                                 closeOnClick={false}
                                                 autoPan 
@@ -171,10 +161,10 @@ export default function LandData({setShownData,shownData}:{shownData:string,setS
                                                 <SimpleAreaChart
                                                     requestUrl = {res.data.requestUrl}
                                                     xUnits={res.data?.units.time}
-                                                    yUnits={res.data?.units[menuItemValue]}
-                                                    label={menuItems.find(i=>i.key===menuItemValue)?.value??''}
+                                                    yUnits={res.data?.units[activeMenuItem]}
+                                                    label={menuItems.find(i=>i.key===activeMenuItem)?.value??''}
                                                     xLabels={res.data?.forecast_data.time??[]}
-                                                    uData={res.data?.forecast_data[menuItemValue] ??[]}
+                                                    uData={res.data?.forecast_data[activeMenuItem] ??[]}
                                                 />
                                             </Popup>
                                         </Box>
@@ -204,6 +194,12 @@ export default function LandData({setShownData,shownData}:{shownData:string,setS
                     }
                 </MapContainer>
             </Box>
+            <LegendItem
+                isLoading={(!isAllSuccess)} 
+                legendRanges={legendRanges}
+                menuItemValue={activeMenuItem}
+                unit={`(${results && results[0] && results[0]?.data?.units?.[activeMenuItem] as string})`}
+            />
             {
                 showNav?(
                     <Box sx={{position:'absolute',display:'flex', width:{lg:'30%',sm:'75%',xs:'75%',md:'50%'},zIndex:99,m:0,top:10,left:50}}>
@@ -483,7 +479,7 @@ const COORDINATE_POINTS = [
 function trimWithEllipsis( input?: string, maxLength: number = 40): string {
     if (!input) return "";
 
-    let text = String(input).trim();
+    const text = String(input).trim();
 
     if (!Number.isFinite(maxLength) || maxLength <= 0) {
         return "";

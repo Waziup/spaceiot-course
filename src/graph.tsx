@@ -9,7 +9,7 @@ interface Props{
     xLabels: string[]  | number[] | Date[]
     uData: number[] | string[] | Date[]
 }
-export const getRequestPath = (url?:string) => {
+const getRequestPath = (url?:string) => {
     if (!url) {
         return ""
     }
